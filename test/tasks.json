@@ -1,0 +1,21 @@
+{
+    "name": "microbes_pipeline", 
+    "pipeline": [
+        {
+            "name": "sra2fastq", 
+            "upstream": []
+        }, 
+        {
+            "name": "align-index", 
+            "upstream": ["sra2fastq"]
+        }, 
+        {
+            "name": "align-shifted-index", 
+            "upstream": ["sra2fastq"]
+        }, 
+        {
+            "name": "merge-bam", 
+            "upstream": ["align-index", "align-shifted-index"]
+        }
+    ]
+}
