@@ -11,12 +11,27 @@ Alpaca 是一个用于大规模数据分析处理的样本分发器。
 ### Samples
 
 ```
+#SAMPLE_NAME
 sample_1
 sample_2
 sample_3
 sample_4
 sample_5
 sample_6
+...
+```
+
+或
+
+```
+#SAMPLE_NAME	SAMPLE_DIR	GROUP	ADD
+sample_1	/dir/to/sample_1	A	T
+sample_2	/dir/to/sample_2	A	T
+sample_3	/dir/to/sample_3	A	T
+sample_4	/dir/to/sample_4	B	T
+sample_5	/dir/to/sample_5	B	T
+sample_6	/dir/to/sample_6	B	T
+...
 ```
 
 ### Tasks

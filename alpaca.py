@@ -4,6 +4,7 @@ from aiohttp import web
 from enum import IntEnum
 import argparse
 import sys
+import pickle
 
 # 定义任务状态
 class TaskStatus(IntEnum):
@@ -15,11 +16,12 @@ class TaskStatus(IntEnum):
 
 # 任务管理模块
 class TaskManager:
-    def __init__(self, tasks_json_path, samples_list_path):
+    def __init__(self, tasks_json_path, samples_list_path, backup_status_path):
         self.tasks_json_path = tasks_json_path
         self.samples_list_path = samples_list_path
+        self.backup_status_path = backup_status_path
         self.tasks = self.load_tasks(tasks_json_path)
-        self.samples = self.load_samples(samples_list_path)
+        self.samples, self.metadata, self.meta_vars = self.load_samples(samples_list_path)
         self.status = {sample: {task['name']: TaskStatus.UNPROCESS for task in self.tasks['pipeline']} for sample in self.samples}
         self.locks = {sample: asyncio.Lock() for sample in self.samples}
         self.update_lock = asyncio.Lock()  # 用于更新操作的锁
@@ -30,7 +32,19 @@ class TaskManager:
 
     def load_samples(self, path):
         with open(path) as f:
-            return [line.strip() for line in f.readlines()]
+            header = f.readline().strip().split('\t')
+            info_length = len(header)
+            if info_length == 1:
+                return [line.strip() for line in f.readlines()], None, []
+            else:
+                sample_list = []
+                sample_dict = {}
+                for line in f.readlines():
+                    sample_info = line.strip().split('\t')
+                    sample_name = sample_info[0]
+                    sample_dict[sample_name] = {k:v for k,v in zip(header[1:], sample_info[1:])}
+                    sample_list.append(sample_name)
+                return sample_list, sample_dict, header[1:]
 
     async def update_tasks(self):
         async with self.update_lock:
@@ -43,12 +57,19 @@ class TaskManager:
 
     async def update_samples(self):
         async with self.update_lock:
-            new_samples = self.load_samples(self.samples_list_path)
-            for sample in new_samples:
-                if sample not in self.samples:
-                    self.samples.append(sample)
-                    self.status[sample] = {task['name']: TaskStatus.UNPROCESS for task in self.tasks['pipeline']}
-                    self.locks[sample] = asyncio.Lock()
+            new_samples, new_metadata, new_meta_vars = self.load_samples(self.samples_list_path)
+            for sample_name in new_samples:
+                if sample_name not in self.samples:
+                    self.samples.append(sample_name)
+                    self.status[sample_name] = {task['name']: TaskStatus.UNPROCESS for task in self.tasks['pipeline']}
+                    self.locks[sample_name] = asyncio.Lock()
+                    self.metadata[sample_name] = new_metadata[sample_name]
+            # 获取原先不存在的 meta 列名 -> list(str)
+            add_meta_vars = [var for var in new_meta_vars if var not in self.meta_vars]
+            if len(add_meta_vars) > 0:
+                for sample_name, meta_dict in new_metadata.items():
+                    for var in add_meta_vars:
+                        self.metadata[sample_name][var] = new_metadata[sample_name][var]
 
     async def get_ready_sample(self, task_name):
         for sample in self.samples:
@@ -77,14 +98,27 @@ class TaskManager:
         return '\n'.join(['\t'.join(line) for line in lines])
 
 # HTTP 请求处理，与路由设置对应
+async def index(request):
+    return web.Response(text = 'Hello, this is Alpaca')
+
 async def get_sample(request):
     task_name = request.match_info['task_name']
+    meta_list = request.match_info.get('meta_list')
     task_manager = request.app['task_manager']
+    if meta_list:
+        meta_list = meta_list.split(',')
+        if not all(var in task_manager.meta_vars for var in meta_list):
+            return web.Response(status = 404, text = 'Meta data not found')
     sample = await task_manager.get_ready_sample(task_name)
     if sample:
-        return web.Response(text = sample)
+        if meta_list:
+            meta_feedback = [sample]
+            meta_feedback += [task_manager.metadata[sample][meta_name] for meta_name in meta_list]
+            return web.Response(text = ';'.join(meta_feedback))
+        else:
+            return web.Response(text = sample)
     else:
-        return web.Response(status = 404, text = 'No ready samples found')
+        return web.Response(status = 404, text = 'No ready samples found')    
 
 async def report_status(request):
     status = request.match_info['status']
@@ -96,7 +130,7 @@ async def report_status(request):
             task_manager.status[sample_name][task_name] = TaskStatus[status.upper()]
             return web.Response(text = f"Updated {sample_name} for {task_name} to {status}")
         else:
-            return web.Response(status=404, text = 'Sample or task not found')
+            return web.Response(status = 404, text = 'Sample or task not found')
 
 async def update_tasks(request):
     await request.app['task_manager'].update_tasks()
@@ -110,22 +144,37 @@ async def get_task_status(request):
     task_name = request.match_info.get('task_name')
     task_manager = request.app['task_manager']
     csv_data = task_manager.get_task_status_csv(task_name)
-    return web.Response(text=csv_data, content_type='text/csv')
+    return web.Response(text = csv_data, content_type = 'text/csv')
+
+async def backup_task_status(request):
+    task_manager = request.app['task_manager']
+    if task_manager.backup_status_path is not None:
+        with open(task_manager.backup_status_path + '/task_status.pkl', 'wb') as f:
+            pickle.dump(task_manager.status, f)
+        return web.Response(text = 'Task manager saved successfully\n')
+    else:
+        return web.Response(text = 'The path to the backup file was not specified\n')
+
+
 
 # 设置路由
 def setup_routes(app):
+    app.router.add_get('', index)
     app.router.add_get('/get_sample/{task_name}', get_sample)
+    app.router.add_get('/get_sample/{task_name}/{meta_list}', get_sample)
     app.router.add_get('/report/{status}/{task_name}/{sample_name}', report_status)
     app.router.add_get('/update_tasks', update_tasks)
     app.router.add_get('/update_samples', update_samples)
-    app.router.add_get('/get_task_status/', get_task_status)
+    app.router.add_get('/get_task_status', get_task_status)
     app.router.add_get('/get_task_status/{task_name}', get_task_status)
+    app.router.add_get('/backup_task_status', backup_task_status)
 
 # 解析命令行参数
 def parse_args():
     parser = argparse.ArgumentParser(description = 'Async Web Server for Task and Sample Management')
     parser.add_argument('--tasks-json-dir', required = True, type = str, help = 'Path to the JSON file containing tasks')
     parser.add_argument('--samples-list-dir', required = True, type = str, help = 'Path to the TXT file containing samples list')
+    parser.add_argument('--backup-status-dir', type = str, default = None, help = 'Path to the backup file (task_status.pkl)')
     parser.add_argument('--port', type = int, default = 10080, help = 'Port number to run the web server on')
     return parser.parse_args()
 
@@ -133,7 +182,7 @@ def parse_args():
 def init_app(argv):
     args = parse_args()
     app = web.Application()
-    app['task_manager'] = TaskManager(args.tasks_json_dir, args.samples_list_dir)
+    app['task_manager'] = TaskManager(args.tasks_json_dir, args.samples_list_dir, args.backup_status_dir)
     setup_routes(app)
     return app, args.port
 
