@@ -70,6 +70,7 @@ class TaskManager:
                 for sample_name, meta_dict in new_metadata.items():
                     for var in add_meta_vars:
                         self.metadata[sample_name][var] = new_metadata[sample_name][var]
+                self.meta_vars += add_meta_vars
 
     async def get_ready_sample(self, task_name):
         for sample in self.samples:
@@ -99,7 +100,7 @@ class TaskManager:
 
 # HTTP 请求处理，与路由设置对应
 async def index(request):
-    return web.Response(text = 'Hello, this is Alpaca')
+    return web.Response(text = 'Hello, this is Alpaca!\n')
 
 async def get_sample(request):
     task_name = request.match_info['task_name']
@@ -134,11 +135,11 @@ async def report_status(request):
 
 async def update_tasks(request):
     await request.app['task_manager'].update_tasks()
-    return web.Response(text = 'Tasks updated successfully')
+    return web.Response(text = 'Tasks updated successfully\n')
 
 async def update_samples(request):
     await request.app['task_manager'].update_samples()
-    return web.Response(text = 'Samples updated successfully')
+    return web.Response(text = 'Samples updated successfully\n')
 
 async def get_task_status(request):
     task_name = request.match_info.get('task_name')
